@@ -5,7 +5,7 @@ KDIR := /lib/modules/$(KVERS)/build/
 PWD = $(shell pwd)
 
 obj-m = lktrace_fs.o
-lktrace_fs-objs =  lktracefs.o 
+lktrace_fs-objs =  lktracefs.o lktrace_filebool.o 
 
 
 	
@@ -13,4 +13,4 @@ modules::
 	$(MAKE)  -C $(KDIR) M=$(PWD) modules
 
 clean::
-	rm -f *.o *.ko modules.order  Module.symvers lktrace_fs.mod.c
+	rm -fr *.o *.ko modules.order  Module.symvers lktrace_fs.mod.c .lk* .tmp_versions

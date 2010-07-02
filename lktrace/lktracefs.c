@@ -7,6 +7,11 @@
 #define LKTRACE_FSNAME "lktracefs"
 #define LKTRACE_FSMAGIC 0xef1244dd 
 
+extern  int
+lktracefile_create_enable_file( struct super_block  *sb,
+                                struct dentry       *root,
+                                int                 *associated_data);
+
 
 static struct lktrace_state
 {
@@ -44,7 +49,7 @@ static struct super_operations lktrace_sb_fops = {
 };
 
 
-static struct dentry*
+struct dentry*
 lktracefs_create_file(	struct super_block		*sb,
 						struct dentry			*rootdir,
 						char   const			*const fname,
@@ -72,6 +77,7 @@ lktracefs_create_file(	struct super_block		*sb,
 }
 
 
+__attribute__((unused))
 static struct dentry*
 lktracefs_create_dir(	struct super_block      *sb,	
 						struct dentry			*rootdir,
@@ -98,88 +104,13 @@ lktracefs_create_dir(	struct super_block      *sb,
 		return file;
 }
 
-DEFINE_SPINLOCK(lktrace_state_lock);
-
-static ssize_t
-lktracefs_bool_fops_read(	struct file *file,
-							char __user *buf,
-							size_t count,
-							loff_t *offset)
-{
-		unsigned long val;
-		int copied_val, ret;
-		char tmpbuff[2];
-		
-
-		spin_lock_irqsave(&lktrace_state_lock, val);
-		copied_val = lktrace_state.lk_enabled;
-		spin_unlock_irqrestore(&lktrace_state_lock, val);
-
-		ret = snprintf(tmpbuff, sizeof(tmpbuff), "%d", copied_val);
-		return simple_read_from_buffer(buf, count, offset, tmpbuff, ret);
-}
-
-
-static ssize_t
-lktracefs_bool_fops_write(	struct file *file,
-							char const __user *buf,
-							size_t count, 
-							loff_t *offset)
-{
-		char c;
-		unsigned long value;
-		int val;
-
-		if (copy_from_user(&c, buf, 1)){
-				return -EFAULT;
-		}
-		
-		val = c - '0';
-		if(val != 0 && val != 1){
-				return -EINVAL;
-		}
-
-		spin_lock_irqsave(&lktrace_state_lock, value);
-		lktrace_state.lk_enabled = val;
-		spin_unlock_irqrestore(&lktrace_state_lock, value);
-
-		return count;
-}
-
-
-static struct file_operations lktracefs_bool_fops = {
-		.read		=	lktracefs_bool_fops_read,
-		.write		=	lktracefs_bool_fops_write,
-};
-
-
-static struct file_operations lktracefs_data_fops = {
-		.read		=	lktracefs_bool_fops_read,
-		.write		=	lktracefs_bool_fops_write,
-};
-
 
 static void
 lktracefs_create_files(struct super_block *sb, struct dentry *root)
 {
-		struct dentry *enable_file = lktracefs_create_file(	sb,
-															root,
-															"enable",
-															&lktracefs_bool_fops,
-															S_IFREG | 0644);
-		struct dentry *buffer_file = lktracefs_create_file(	sb,
-															root,
-															"data",
-															&lktracefs_data_fops,
-															S_IFREG | 0644);
-
-
-		if(IS_ERR(enable_file)){
-				printk(KERN_ERR "unable to create enable file \n");
-		}
-		if(IS_ERR(buffer_file)){
-				printk(KERN_ERR "unable to create buffer file \n");
-		}
+        if(lktracefile_create_enable_file(sb, root, &lktrace_state.lk_enabled)){
+                printk(KERN_ERR "unable to create enable file\n");
+        }
 }
 
 
