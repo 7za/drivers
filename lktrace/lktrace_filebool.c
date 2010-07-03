@@ -1,4 +1,6 @@
 #include <linux/fs.h>
+#include <linux/wait.h>
+#include <linux/sched.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/poll.h>
@@ -45,6 +47,8 @@ lktrace_bool_fops_read( struct file *fs,
         int *ptr = fs->private_data;
         int ret;
 
+		*where = 0;
+
         if(size < 1){
                 return -ENOMEM;
         }
@@ -61,8 +65,8 @@ lktrace_bool_fops_read( struct file *fs,
         }
 
         ret = simple_read_from_buffer(ubuf, size, where, &c, 1);
-        if(ret == 1){
-                clear_bit( 1, &bool_filestate_changed);
+        if(ret > 0){
+                clear_bit( 0, &bool_filestate_changed);
         }
         return ret;
 }
@@ -92,6 +96,7 @@ lktrace_bool_fops_write(    struct file *file,
         if(*ptr != val){
                 *ptr = val;
                 bool_filestate_changed = 1;
+				wake_up_interruptible(&bool_fileaccess_wait);
         }
         spin_unlock_irqrestore(&bool_lock, flag);
         return size;
@@ -101,29 +106,29 @@ lktrace_bool_fops_write(    struct file *file,
 static unsigned int
 lktrace_bool_fops_poll(struct file *file, poll_table *wait)
 {
-    unsigned long ready;
-    unsigned long flag;
-    poll_wait(file, &bool_fileaccess_wait, wait);
-    spin_lock_irqsave(&bool_lock, flag);
-    ready = bool_filestate_changed;
-    spin_unlock_irqrestore(&bool_lock, flag);
+	    unsigned long ready;
+		unsigned long flag;
+		poll_wait(file, &bool_fileaccess_wait, wait);
+		spin_lock_irqsave(&bool_lock, flag);
+		ready = bool_filestate_changed;
+		spin_unlock_irqrestore(&bool_lock, flag);
 
-    /* Availability of data is detected from interrupt context */
-    if(ready){
-            return POLLIN | POLLRDNORM;
-    }
-    return  POLLOUT | POLLWRNORM ;
+		/* Availability of data is detected from interrupt context */
+		if(ready){
+		        return POLLIN;
+		}
+		return  POLLOUT;
 }
 
 
 
 static struct file_operations lktrace_bool_fops = {
-    .open       =   lktrace_bool_fops_open,
-    .release    =   lktrace_bool_fops_release,
-    .read       =   lktrace_bool_fops_read,
-    .write      =   lktrace_bool_fops_write,
-    .poll       =   lktrace_bool_fops_poll,
-    .owner      =   THIS_MODULE,
+	    .open       =   lktrace_bool_fops_open,
+		.release    =   lktrace_bool_fops_release,
+		.read       =   lktrace_bool_fops_read,
+		.write      =   lktrace_bool_fops_write,
+		.poll       =   lktrace_bool_fops_poll,
+		.owner      =   THIS_MODULE,
 };
 
 
