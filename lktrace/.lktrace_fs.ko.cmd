@@ -1,1 +1,0 @@
-cmd_/home/fred/Programmations/Divers/drivers/lktrace/lktrace_fs.ko := ld -r -m elf_i386 -T /usr/src/linux-2.6.34-ARCH/scripts/module-common.lds --build-id -o /home/fred/Programmations/Divers/drivers/lktrace/lktrace_fs.ko /home/fred/Programmations/Divers/drivers/lktrace/lktrace_fs.o /home/fred/Programmations/Divers/drivers/lktrace/lktrace_fs.mod.o

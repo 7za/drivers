@@ -1,1 +1,0 @@
-cmd_/home/fred/Programmations/Divers/drivers/lktrace/lktrace_fs.o := ld -m elf_i386   -r -o /home/fred/Programmations/Divers/drivers/lktrace/lktrace_fs.o /home/fred/Programmations/Divers/drivers/lktrace/lktracefs.o 
