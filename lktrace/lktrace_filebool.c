@@ -47,14 +47,15 @@ lktrace_bool_fops_read( struct file *fs,
         int *ptr = fs->private_data;
         int ret;
 
-		*where = 0;
-
         if(size < 1){
                 return -ENOMEM;
         }
         if(!ptr){
                 return -EIO;
         }
+		if(*where){
+				return 0;
+		}
         
         spin_lock_irqsave(&bool_lock, flag);
         c = *ptr + '0';    

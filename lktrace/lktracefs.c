@@ -12,6 +12,12 @@ lktracefile_create_enable_file( struct super_block  *sb,
                                 struct dentry       *root,
                                 int                 *associated_data);
 
+extern int
+lktrace_create_debugfs(void*);
+
+
+extern void
+lktrace_destroy_debugfs(void);
 
 static struct lktrace_state
 {
@@ -111,6 +117,9 @@ lktracefs_create_files(struct super_block *sb, struct dentry *root)
         if(lktracefile_create_enable_file(sb, root, &lktrace_state.lk_enabled)){
                 printk(KERN_ERR "unable to create enable file\n");
         }
+		if(lktrace_create_debugfs(NULL)){
+				printk(KERN_ERR "unable to create debugfs files\n");
+		}
 }
 
 
@@ -181,6 +190,7 @@ static void __exit
 lktracefs_exit(void)
 {
 		unregister_filesystem(&lktracefs_type);
+		lktrace_destroy_debugfs();
 }
 
 module_init(lktracefs_init);
