@@ -9,6 +9,10 @@
 
 /* define list */
 
+#ifndef  __unused
+# define __unused __attribute__((unused))
+#endif
+
 #define STRESS_DRIVER_VERSION	"v1.0"
 #define STRESS_DRIVER_AUTHOR	"frederic ferrandis"
 #define STRESS_DRIVER_DESC	"usb stress mouse hid driver"
@@ -19,8 +23,11 @@
 
 #define USB_STRESS_DRIVER_NAME	"usbstress"
 
-#define BM_REQUEST_TYPE		(0x22)  /*interface|class|host_to_device*/
-#define BM_REQUEST		(0x09)  /* set_report*/
+#define BM_REQUEST_TYPE		( USB_TYPE_CLASS |\
+				  USB_RECIP_INTERFACE |\
+				  USB_DIR_OUT)
+
+#define BM_REQUEST		(USB_REQ_SET_CONFIGURATION)  /* set_report*/
 #define BM_VALUE		(0x0200)
 #define BM_INDEX		(0)
 #define BM_LEN			(0x08)
@@ -28,6 +35,9 @@
 #ifndef __lock_ctx
 #define __lock_ctx
 #endif
+
+#undef  DEBUG
+#define DEBUG
 
 /* private prototype */
 
@@ -40,7 +50,6 @@ static int  __devinit usb_stress_probe(	struct usb_interface *,
 
 static void __devexit usb_stress_disconnect(struct usb_interface *);
 
-static void __devexit usb_stress_unset_in_endpoint(void);
 
 /* record device id in usbcore subsystem */
 
@@ -61,69 +70,59 @@ static struct usb_driver usb_stress_driver = {
 	.supports_autosuspend = 0,
 };
 
-/* usb stress driver specific data  */
-
-struct usb_stress_endpoint_desc {
-	size_t len;
-	__u8   addr;
-	u8     buff[8];
-};
-
-#define USB_STRESS_ENDPOINT_INITIALIZER \
-	{ .len = 0, .addr = 0, .buff = { [0 ... 7] = 0 } }
-
 struct usb_stress {
-	struct usb_stress_endpoint_desc in;
-	struct usb_stress_endpoint_desc out;
-	struct usb_device *usbdev;   /* kernel representation of a usbdev    */
-	struct usb_interface *usbitf;
+	struct usb_device	*us_dev;   /* kernel representation of a usbdev    */
+	struct usb_interface	*us_itf;
 
-	struct timer_list usbtimer;
+	struct urb		*us_urbctrl;
+	struct usb_ctrlrequest	*us_reqctrl;
 
-	spinlock_t usbspin;
-	struct mutex usbmutex;
+	char			*us_buffctrl;
+	dma_addr_t		 us_dmactrl;
 
-	struct urb *urbint;
-	struct urb *urbctrl;
-	struct usb_ctrlrequest *ctrl;
+	struct timer_list us_timer;
+
+	spinlock_t us_lock;
+	struct mutex us_mutex;
+
 };
 
-#define USB_STRESS_INITIALIZER 					\
-	{	.in	= USB_STRESS_ENDPOINT_INITIALIZER,	\
-	  	.out	= USB_STRESS_ENDPOINT_INITIALIZER,	\
-	  	.usbdev  = NULL,			  	\
-	  	.usbitf  = NULL,				\
-		.urbint  = NULL,				\
-	  	.urbctrl = NULL,				\
-		.ctrl	 = NULL,				\
-	}
+static struct usb_stress usbstress;
 
-static struct usb_stress usbstress = USB_STRESS_INITIALIZER;
+/* convert status'err code in string */
+static char* usb_completion_status_err(int err)
+{
+	/*FIXME : change all */
+	switch(err) {
+	case 0:			return "success";
+	case -EOVERFLOW:	return "overflow error";
+	case -EPIPE:		return "stalled endpoint";
+	default:		return "generic error";
+	};
+}
 
-
+/* convert err code return by usb_submit_urb in string */
 static char* usb_submit_urb_err(int err)
 {
 	char *ret = NULL;
 	static const char *unknow = "unknown error";
 	static const char *usb_submit_ret_to_str [] = {
-		[0]		= "succcess\n",
-		[ENOMEM]	= "oom\n",
-		[EPIPE]		= "stalled ep\n",
-		[ENODEV]	= "no device\n",
-		[EAGAIN]	= "too many packet\n",
-		[EFBIG]		= "too request frame\n",
+		[0]		= "succcess",
+		[ENOMEM]	= "oom",
+		[EPIPE]		= "stalled ep",
+		[ENODEV]	= "no device",
+		[EAGAIN]	= "too many packet",
+		[EFBIG]		= "too request frame",
 	};
 	err = -err;
 	if(err < 0 || err >= ARRAY_SIZE(usb_submit_ret_to_str) ) {
 		return (char*)unknow;	
 	}
 	ret = (char*)usb_submit_ret_to_str[err];
-	if(ret == NULL) {
-		ret = (char*)unknow;
-	}
-	return ret;
+	return ret ? ret : (char*)unknow;
 }
 
+/* init value of ctrl_request used in usb control message */
 static int usb_stress_init_ctrlrequest(	struct usb_ctrlrequest *req,
 					__u8  breqtype,
 					__u8  breq,
@@ -131,8 +130,9 @@ static int usb_stress_init_ctrlrequest(	struct usb_ctrlrequest *req,
 					__u16 index,
 					__u16 len)
 {
+	/* little check about param */
 	if(unlikely(req == NULL)) {
-		return -ENOMEM;
+		return -EINVAL;
 	}
 
 	req->bRequestType	= breqtype;
@@ -140,128 +140,93 @@ static int usb_stress_init_ctrlrequest(	struct usb_ctrlrequest *req,
 	req->wValue		= cpu_to_le16(val);
 	req->wIndex		= cpu_to_le16(index);
 	req->wLength		= cpu_to_le16(len);
+#ifdef DEBUG
+	dev_info(&usbstress.us_dev->dev, "%s:%d[reqtype=%u, req=%u, val=%u,"
+					"index=%u, len=%u]\n",
+					__func__,
+					__LINE__,
+					req->bRequestType,
+					req->bRequest,
+					req->wValue,
+					req->wIndex,
+					req->wLength);
+#endif
 	return 0;
-}
-
-static void usb_stress_interrupt_handler(struct urb *urb)
-{
-	int status;
-
-	if(unlikely(urb == NULL)) {
-		dev_info(&usbstress.usbdev->dev, "urb completion NULL \n");
-		return;	
-	}
-	status = urb->status;
-	if(status != 0) {
-		dev_info(&usbstress.usbdev->dev, "urb int_in err[%d]\n",
-			status);
-		return;
-	} else {
-		dev_info(&usbstress.usbdev->dev, "urb int_in success[%d]\n",
-			status);
-		return;
-	}
 }
 
 static void usb_stress_ctrl_completion(struct urb *urb)
 {
+	struct device *dev = &usbstress.us_dev->dev;
 	int status;
 	u32 cpt;
 	if(unlikely(urb == NULL)) {
-		dev_info(&usbstress.usbdev->dev, "urb completion NULL \n");
+		dev_info(dev, "urb completion NULL \n");
 		return;
 	}
 	status = urb->status;
-	dev_info(&usbstress.usbdev->dev, "status = %d\n", status);
 
 	if(status == 0) {
-		struct usb_ctrlrequest *curreq = (struct usb_ctrlrequest*)
-							urb->context;
 		char *data  = urb->transfer_buffer;
-		dev_info(&usbstress.usbdev->dev, "urb transmited\n");
+		dev_info(dev, "urb transmited\n");
 		if(data) {
-			dev_info(&usbstress.usbdev->dev, "msg_%s : ",
+			dev_info(dev, "msg_%s : ",
 				(urb->pipe & USB_DIR_IN)?"in":"out");
 			for(cpt = 0; cpt < urb->transfer_buffer_length; ++cpt) {
 				printk("0x%x ", data[cpt]);				
 			}
 			printk("\n");
 		}
-		if(curreq) {
-			kfree(curreq);
-		}
 	} else {
-		if(status == -EOVERFLOW) {
-			dev_info(&usbstress.usbdev->dev, "urb overflow error\n");
-		} else {
-			dev_info(&usbstress.usbdev->dev, "urb error = %d\n", status);
-		}
+		char *errstr = usb_completion_status_err(status);
+		dev_err(dev, "urb completion err[%s]\n", errstr);
+#ifdef DEBUG
+		dev_info(dev, "%s:%d[pipe=%u, actulen=%u, "
+						"trsflag=%u, trsbufflen=%u]\n",
+						__func__,
+						__LINE__,
+						urb->pipe,
+						urb->actual_length,
+						urb->transfer_flags,
+						urb->transfer_buffer_length);
+		dev_info(dev,	"%s:%d[ep_dlen=%u, ep_dtype=%u, ep_addr=%u, "
+				"attr=%u, pktsize=%u]\n",
+				__func__,
+				__LINE__,
+				urb->ep->desc.bLength,
+				urb->ep->desc.bDescriptorType,
+				urb->ep->desc.bEndpointAddress,
+				urb->ep->desc.bmAttributes,
+				urb->ep->desc.wMaxPacketSize);
+#endif
 	}
-	usb_free_urb(urb);
 }
 
+/* submit control urb to endpoint 0, with msg = {0, 0, 0, 0, 0, 0, 0, 9} */
 static int usb_stress_ask_stick_status(void)
 {
-	struct urb *urb = NULL;
-	char *msg;
-	struct usb_ctrlrequest *request = kmalloc(sizeof(*request), GFP_KERNEL);
-	struct usb_device *dev = usbstress.usbdev;
-	int controlpipe = 0, ret;
+	int ret;
 	char *msg_err;
-
-	if(unlikely(request == NULL)) {
-		dev_info(&dev->dev, "allocation error\n");
-		return -ENOMEM;
-	}
-	usb_stress_init_ctrlrequest(	request,
-					BM_REQUEST_TYPE, 
-					BM_REQUEST,
-					BM_VALUE,
-					BM_INDEX,
-					BM_LEN);
-
-	urb = usb_alloc_urb(0, GFP_KERNEL);
-
-	if(unlikely(urb == NULL)) {
-		dev_info(&dev->dev, "urb allocation error\n");
-		goto urb_alloc_error;
-	}
-
-	msg = kzalloc(8*sizeof(char), GFP_KERNEL);
-	msg[7] = 9;
-
-	/* create controlpipe thanks to usbdevice and associated 0 endpoint */
-	controlpipe = usb_sndctrlpipe(dev, 0);
-	usb_fill_control_urb(	urb,
-				dev,
-				controlpipe,
-				(unsigned char*)request,
-				(void*)msg,
-				BM_LEN,
-				usb_stress_ctrl_completion,
-				(void*)request);
-
-	ret = usb_submit_urb(urb, GFP_ATOMIC);
+	ret = usb_submit_urb(usbstress.us_urbctrl, GFP_ATOMIC);
 	msg_err = usb_submit_urb_err(ret);
-	dev_info(&dev->dev, "urb_submit : %s", msg_err);
+	dev_info(&usbstress.us_dev->dev, "urb_submit : %s\n ",
+		msg_err);
 	return ret;
-
-urb_alloc_error:
-	kfree(request);
-	return -ENOMEM;
 }
 
-static void usb_stress_poll(unsigned long data)
+static void usb_stress_poll(unsigned long data __unused)
 {
-	int ret;
-	struct urb *urb = usbstress.urbint;
+	usb_stress_ask_stick_status();
+	mod_timer(&usbstress.us_timer, jiffies + 4 * HZ);
+}
 
-	ret = usb_stress_ask_stick_status();
-
-	if(ret != 0) {
-		dev_info(&usbstress.usbdev->dev, "int urb error %d\n", ret);
-	}
-	mod_timer(&usbstress.usbtimer, jiffies + 4 * HZ);
+static void __devexit usb_stress_free_urb(void)
+{
+	usb_free_coherent(usbstress.us_dev,
+			  BM_LEN,
+			  usbstress.us_buffctrl,
+			  usbstress.us_dmactrl);
+	kfree(usbstress.us_reqctrl);
+	usb_free_urb(usbstress.us_urbctrl);
 }
 
 static void __devexit usb_stress_disconnect(struct usb_interface *itf)
@@ -271,9 +236,9 @@ static void __devexit usb_stress_disconnect(struct usb_interface *itf)
 	usb_set_intfdata(itf, NULL);
 	dev = interface_to_usbdev(itf);
 	usb_put_dev(dev);
-	mutex_lock(&usbstress.usbmutex);
-	usb_stress_unset_in_endpoint();
-	mutex_unlock(&usbstress.usbmutex);
+	usb_kill_urb(usbstress.us_urbctrl);
+
+	usb_stress_free_urb();
 }
 
 static struct usb_host_endpoint* __devinit usb_stress_find_endpoint(
@@ -296,121 +261,134 @@ static struct usb_host_endpoint* __devinit usb_stress_find_endpoint(
 			ret = curr;
 		}
 	}
-	if(ret && ret->enabled)
-		return ret;
-	else
-		return NULL;
+#ifdef DEBUG
+	if(ret) {
+		struct device *dev = &usbstress.us_dev->dev;
+		dev_info(dev,	"%s:%d[ep_dlen=%u, ep_dtype=%u, ep_addr=%u, "
+				"attr=%u, pktsize=%u]\n",
+				__func__,
+				__LINE__,
+				ret->desc.bLength,
+				ret->desc.bDescriptorType,
+				ret->desc.bEndpointAddress,
+				ret->desc.bmAttributes,
+				ret->desc.wMaxPacketSize);
+	}
+#endif
+	return ret;
 }
 
-__lock_ctx
-static void __devexit usb_stress_unset_in_endpoint(void)
+static int __devinit usb_stress_alloc_urb(void)
 {
-}
-
-__lock_ctx
-static void __devinit usb_stress_set_in_endpoint(struct usb_host_endpoint *ep)
-{
-	struct usb_stress_endpoint_desc *desc = &usbstress.in;
-	desc->len  = le16_to_cpu(ep->desc.wMaxPacketSize);
-	desc->addr = ep->desc.bEndpointAddress;
-}
-
-__lock_ctx
-static void __devinit usb_stress_set_out_endpoint(struct usb_host_endpoint *ep)
-{
-	struct usb_stress_endpoint_desc *desc = &usbstress.out;
-	desc->addr = ep->desc.bEndpointAddress;
-}
-
-static int __devinit usb_stress_prepare_int_in_ep(struct usb_host_endpoint *e)
-{
-	unsigned int pipe = 0;
-	__u16 maxpacket = 0;
-	char *data = NULL;
-
-	usbstress.urbint = usb_alloc_urb(0, GFP_KERNEL);
-	if(unlikely(usbstress.urbint == NULL)) {
+	usbstress.us_urbctrl = usb_alloc_urb(0, GFP_KERNEL);
+	if(usbstress.us_urbctrl == NULL) {
 		return -ENOMEM;
 	}
-	
-	pipe = usb_rcvintpipe(usbstress.usbdev, e->desc.bEndpointAddress);
-	maxpacket = usb_maxpacket(usbstress.usbdev, pipe, usb_pipeout(pipe)); 
-	data = kzalloc(maxpacket, GFP_KERNEL);
-	if(unlikely(data == NULL)) {
-		goto urb_int_buffer_alloc_err;
+
+	usbstress.us_reqctrl = 
+			kzalloc(sizeof(*usbstress.us_reqctrl), GFP_KERNEL);
+	if(usbstress.us_reqctrl == NULL) {
+		goto usb_alloc_ctrl_err;
 	}
 
-	usb_fill_int_urb(usbstress.urbint,
-			 usbstress.usbdev,
-			 pipe,
-			 data,
-			 maxpacket > 8 ? 8 : maxpacket,
-			 usb_stress_interrupt_handler,
-			 &usbstress,
-			 e->desc.bInterval);
+	usbstress.us_buffctrl = usb_alloc_coherent(	usbstress.us_dev,
+							BM_LEN,
+							GFP_ATOMIC,
+							&usbstress.us_dmactrl);
+	if(usbstress.us_buffctrl == NULL) {
+		goto usb_alloc_dma_err;
+	}
+	return 0;			
 
-	usbstress.urbint->transfer_flags = 0x3;
-	dev_info(&usbstress.usbdev->dev,
-		"create urb int_in[tflag=%u, pkt_size=%u, interval=%u, epaddr=%d]\n",
-		usbstress.urbint->transfer_flags,
-		maxpacket,
-		e->desc.bInterval,
-		e->desc.bEndpointAddress);
-	return 0;
-
-urb_int_buffer_alloc_err:
-	dev_info(&usbstress.usbdev->dev, "can't alloc urb_int buffer\n");
+usb_alloc_dma_err:
+	kfree(usbstress.us_reqctrl );
+usb_alloc_ctrl_err:
+	usb_free_urb(usbstress.us_urbctrl);
+	
 	return -ENOMEM;
 }
 
+static int __devinit usb_stress_init_ctrl_urb(void)
+{
+	int ret;
+	unsigned int ctrlpipe;
+	__u16 maxpacket;
+
+	ret = usb_stress_alloc_urb();
+	if(ret) {
+		return ret;
+	}
+	ctrlpipe = usb_sndctrlpipe(usbstress.us_dev, 0);
+	maxpacket = usb_maxpacket(usbstress.us_dev,
+				  ctrlpipe,
+				  usb_pipeout(ctrlpipe));
+	dev_info(&usbstress.us_dev->dev, "paxpkt of %u pipe : %u\n",
+		ctrlpipe,
+		maxpacket);
+
+	usb_stress_init_ctrlrequest(usbstress.us_reqctrl,
+				    (USB_TYPE_CLASS | 
+				    USB_RECIP_INTERFACE |
+				    USB_DIR_OUT),
+				    (USB_REQ_SET_CONFIGURATION),
+				    BM_VALUE,
+				    BM_INDEX,
+				    maxpacket > BM_LEN ? BM_LEN : maxpacket);
+	usb_fill_control_urb(	usbstress.us_urbctrl,
+				usbstress.us_dev,
+				ctrlpipe,
+				(void*)usbstress.us_reqctrl,
+				usbstress.us_buffctrl,
+				BM_LEN,
+				usb_stress_ctrl_completion,
+				&usbstress);
+	usbstress.us_urbctrl->transfer_dma	= usbstress.us_dmactrl;
+	usbstress.us_urbctrl->transfer_flags	|= URB_NO_TRANSFER_DMA_MAP;
+ 
+	return 0;	
+}
+
 static int __devinit usb_stress_probe(	struct usb_interface *itf,
-					const struct usb_device_id *id)
+					const struct usb_device_id *id __unused)
 {
 	struct usb_host_endpoint *endpoint;
 	struct usb_device *device;
-	int ret;
+	int ret = 0;
 
 	device = interface_to_usbdev(itf);
-	usbstress.usbdev = usb_get_dev(device);
-	usbstress.usbitf = itf;
+	usbstress.us_dev = usb_get_dev(device);
+	usbstress.us_itf = itf;
+
+	usb_reset_device(device);
 
 	endpoint = usb_stress_find_endpoint(itf);
 	if(unlikely(endpoint == NULL)) {
 		dev_info(&device->dev, "%s : can't find endpoint\n", __func__);
 		return -EIO;
 	}
-	dev_info(&device->dev, "find endpoint[addr=%x, len=%x, dtype=%x]\n",
-		endpoint->desc.bEndpointAddress, 
-		endpoint->desc.bLength,
-		endpoint->desc.bDescriptorType);
-	mutex_lock(&usbstress.usbmutex);
-	usb_stress_set_in_endpoint(endpoint);
-	usb_stress_set_out_endpoint(endpoint);
-	mutex_unlock(&usbstress.usbmutex);
-
 	usb_set_intfdata(itf, &usbstress);
 	usb_disable_autosuspend(device);
 
-
-	/*
-	ret = usb_stress_prepare_int_in_ep(endpoint);
+	ret = usb_stress_init_ctrl_urb();
 	if(ret) {
-		return ret;
+		dev_err(&device->dev, "init_ctrl_urb error\n");
+		goto probe_err;
 	}
-	dev_info(&device->dev, "submit urb in %s = %d", __func__, ret);
-	*/
-	dev_info(&device->dev, "%s probe success\n", __func__);
 
-	setup_timer(	&usbstress.usbtimer,
+
+	setup_timer(	&usbstress.us_timer,
 			usb_stress_poll,
 			(unsigned long)&usbstress);
-	mod_timer(&usbstress.usbtimer, jiffies + 4 * HZ);
-	return 0;
-}
+	mod_timer(&usbstress.us_timer, jiffies + 4 * HZ);
 
-#ifndef  __unused
-# define __unused __attribute__((unused))
-#endif
+	dev_info(&device->dev, "%s probe success\n", __func__);
+
+	return 0;
+probe_err:
+	usb_set_intfdata(itf, NULL);
+	usb_put_dev(device);
+	return ret;
+}
 
 static void __unused usb_stress_display_attr(struct usb_interface *inter)
 {
@@ -437,9 +415,9 @@ static void __unused usb_stress_display_attr(struct usb_interface *inter)
 
 static void __init usb_stress_init_data(void)
 {
-	spin_lock_init(&usbstress.usbspin);
-	mutex_init(&usbstress.usbmutex);
-	init_timer(&usbstress.usbtimer);
+	spin_lock_init(&usbstress.us_lock);
+	mutex_init(&usbstress.us_mutex);
+	init_timer(&usbstress.us_timer);
 }
 
 static int __init usb_stress_init(void)
@@ -457,7 +435,7 @@ static int __init usb_stress_init(void)
 
 static void __exit usb_stress_exit(void)
 {
-	del_timer(&usbstress.usbtimer);
+	del_timer(&usbstress.us_timer);
 	usb_deregister(&usb_stress_driver);
 }
 
@@ -468,3 +446,4 @@ MODULE_AUTHOR(STRESS_DRIVER_AUTHOR);
 MODULE_LICENSE(STRESS_DRIVER_LICENSE);
 MODULE_DESCRIPTION(STRESS_DRIVER_DESC);
 MODULE_VERSION(STRESS_DRIVER_VERSION);
+
