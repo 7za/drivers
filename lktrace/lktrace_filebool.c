@@ -79,6 +79,8 @@ lktrace_bool_fops_write(    struct file *file,
         unsigned long flag;
         int *ptr;
          
+        printk("little debug = %p\n", ubuff);
+
         if(copy_from_user(&c, ubuff, 1)){
                 return -EACCES;
         }
