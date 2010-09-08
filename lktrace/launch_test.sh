@@ -12,10 +12,21 @@ stop()
     umount ./test && rmmod lktrace_fs;
 }
 
+restart()
+{
+	stop;
+	start;
+}
+
 if [ $(id -u) != "0" ]
 then
     echo -e "$0 must be started as root";
     exit 1
+fi
+
+if [ ! -d "./test" ]
+then
+	mkdir test
 fi
 
 if [ $# -eq 1 ]
