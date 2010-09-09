@@ -6,6 +6,7 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/timer.h>
+#include <linux/hid.h>
 
 /* define list */
 
@@ -23,18 +24,11 @@
 
 #define USB_STRESS_DRIVER_NAME	"usbstress"
 
-#define BM_REQUEST_TYPE		( USB_TYPE_CLASS |\
-				  USB_RECIP_INTERFACE |\
-				  USB_DIR_OUT)
-
-#define BM_REQUEST		(USB_REQ_SET_CONFIGURATION)  /* set_report*/
-#define BM_VALUE		(0x0200)
-#define BM_INDEX		(0)
-#define BM_LEN			(0x08)
-
-#ifndef __lock_ctx
-#define __lock_ctx
-#endif
+#define BM_LEN		(8)
+#define BM_VALUE	(0x200)
+#define BM_INDEX	(0)
+#define BM_REQUESTYPE	(0x21)
+#define BM_REQUEST	(0x9)
 
 #undef  DEBUG
 #define DEBUG
@@ -71,8 +65,9 @@ static struct usb_driver usb_stress_driver = {
 };
 
 struct usb_stress {
-	struct usb_device	*us_dev;   /* kernel representation of a usbdev    */
+	struct usb_device	*us_dev; 
 	struct usb_interface	*us_itf;
+	struct hid_descriptor	*us_hid;
 
 	struct urb		*us_urbctrl;
 	struct usb_ctrlrequest	*us_reqctrl;
@@ -92,34 +87,24 @@ static struct usb_stress usbstress;
 /* convert status'err code in string */
 static char* usb_completion_status_err(int err)
 {
-	/*FIXME : change all */
 	switch(err) {
 	case 0:			return "success";
 	case -EOVERFLOW:	return "overflow error";
 	case -EPIPE:		return "stalled endpoint";
 	default:		return "generic error";
-	};
+	}
 }
 
 /* convert err code return by usb_submit_urb in string */
 static char* usb_submit_urb_err(int err)
 {
-	char *ret = NULL;
-	static const char *unknow = "unknown error";
-	static const char *usb_submit_ret_to_str [] = {
-		[0]		= "succcess",
-		[ENOMEM]	= "oom",
-		[EPIPE]		= "stalled ep",
-		[ENODEV]	= "no device",
-		[EAGAIN]	= "too many packet",
-		[EFBIG]		= "too request frame",
-	};
-	err = -err;
-	if(err < 0 || err >= ARRAY_SIZE(usb_submit_ret_to_str) ) {
-		return (char*)unknow;	
+	switch(err) {
+		case 0:		return "success";
+		case -EPIPE:	return "unknownn urb";
+		case -ENODEV:	return "no device";
+		case -EAGAIN:	return "too many packet";
+		default:	return "generic error";
 	}
-	ret = (char*)usb_submit_ret_to_str[err];
-	return ret ? ret : (char*)unknow;
 }
 
 /* init value of ctrl_request used in usb control message */
@@ -207,9 +192,11 @@ static int usb_stress_ask_stick_status(void)
 	int ret;
 	char *msg_err;
 	ret = usb_submit_urb(usbstress.us_urbctrl, GFP_ATOMIC);
+#ifdef DEBUG
 	msg_err = usb_submit_urb_err(ret);
 	dev_info(&usbstress.us_dev->dev, "urb_submit : %s\n ",
 		msg_err);
+#endif
 	return ret;
 }
 
@@ -348,6 +335,27 @@ static int __devinit usb_stress_init_ctrl_urb(void)
 	return 0;	
 }
 
+static int __devinit usb_stress_get_hid_desc(struct usb_host_interface *itf)
+{
+	int ret;
+
+	if(itf == NULL) {
+		return -EINVAL;
+	}
+
+	ret = usb_get_extra_descriptor(itf, HID_DT_HID, &usbstress.us_hid);
+	if(ret) {
+		ret =  usb_get_extra_descriptor(&itf->endpoint[0], 
+						HID_DT_REPORT,
+						&usbstress.us_hid);
+	}
+	if(ret) {
+		dev_err(&usbstress.us_dev->dev, "no hid desc found\n");
+		ret = -ENODEV;
+	}
+	return ret;
+}
+
 static int __devinit usb_stress_probe(	struct usb_interface *itf,
 					const struct usb_device_id *id __unused)
 {
@@ -359,21 +367,32 @@ static int __devinit usb_stress_probe(	struct usb_interface *itf,
 	usbstress.us_dev = usb_get_dev(device);
 	usbstress.us_itf = itf;
 
-	usb_reset_device(device);
-
 	endpoint = usb_stress_find_endpoint(itf);
 	if(unlikely(endpoint == NULL)) {
 		dev_info(&device->dev, "%s : can't find endpoint\n", __func__);
 		return -EIO;
 	}
 	usb_set_intfdata(itf, &usbstress);
-	usb_disable_autosuspend(device);
 
 	ret = usb_stress_init_ctrl_urb();
 	if(ret) {
 		dev_err(&device->dev, "init_ctrl_urb error\n");
 		goto probe_err;
 	}
+
+	ret = usb_stress_get_hid_desc(itf->cur_altsetting);
+	if(ret) {
+		goto probe_err;
+	}
+#ifdef DEBUG
+	dev_info(&device->dev,
+		"hid_desc[len=%u, dtype=%u, class[dtype=%x, dlen=%x(%x)]\n",
+		usbstress.us_hid->bLength,
+		usbstress.us_hid->bDescriptorType,
+		usbstress.us_hid->desc[0].bDescriptorType,
+		usbstress.us_hid->desc[0].wDescriptorLength,
+		cpu_to_le16(usbstress.us_hid->desc[0].wDescriptorLength));
+#endif
 
 
 	setup_timer(	&usbstress.us_timer,
