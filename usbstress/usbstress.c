@@ -208,12 +208,21 @@ static void usb_stress_poll(unsigned long data __unused)
 
 static void __devexit usb_stress_free_urb(void)
 {
-	usb_free_coherent(usbstress.us_dev,
-			  BM_LEN,
-			  usbstress.us_buffctrl,
-			  usbstress.us_dmactrl);
-	kfree(usbstress.us_reqctrl);
-	usb_free_urb(usbstress.us_urbctrl);
+	if(usbstress.us_buffctrl) {
+		usb_free_coherent(usbstress.us_dev,
+				BM_LEN,
+				usbstress.us_buffctrl,
+			  	usbstress.us_dmactrl);
+		 usbstress.us_buffctrl = NULL;
+	}
+	if(usbstress.us_reqctrl) {
+		kfree(usbstress.us_reqctrl);
+		usbstress.us_reqctrl = NULL;
+	}
+	if(usbstress.us_urbctrl) {
+		usb_free_urb(usbstress.us_urbctrl);
+		usbstress.us_urbctrl = NULL;
+	}
 }
 
 static void __devexit usb_stress_disconnect(struct usb_interface *itf)
@@ -356,6 +365,75 @@ static int __devinit usb_stress_get_hid_desc(struct usb_host_interface *itf)
 	return ret;
 }
 
+static int __devinit usb_stress_set_hid_report(struct usb_interface *itf)
+{
+	struct usb_device *dev = usbstress.us_dev;
+	__le16 len = usbstress.us_hid->desc[0].wDescriptorLength;
+	char *buff;
+	int ctrlpipe = usb_sndctrlpipe(dev, 0);
+	int ret;
+
+	buff = kzalloc(len, GFP_KERNEL);
+	if(buff == NULL) {
+		return -ENOMEM;
+	}
+	buff[7] = 8;
+	buff[0] = 15;
+	printk("len is %x and val is %u\n", len, (1<<8));
+	ret = usb_control_msg(	dev, ctrlpipe, USB_REQ_SET_DESCRIPTOR,
+				USB_DIR_OUT | USB_TYPE_STANDARD | USB_RECIP_INTERFACE,
+				0x200, 
+				0,
+				buff,
+				len,
+				1000);
+	if(ret > 0) {
+		__le16 i;
+		for(i = 0; i < len; ++i) {
+			printk("%d ", buff[i]);
+		}
+		ret = 0;
+	} else {
+		printk("unable to get report (err=%d)\n", ret);
+	}
+	kfree(buff);
+	return ret;
+}
+
+static int __devinit usb_stress_get_hid_report(struct usb_interface *itf)
+{
+	struct usb_device *dev = usbstress.us_dev;
+	__le16 len = usbstress.us_hid->desc[0].wDescriptorLength;
+	char *buff;
+	int ctrlpipe = usb_rcvctrlpipe(dev, 0);
+	int ret;
+
+	buff = kzalloc(len, GFP_KERNEL);
+	if(buff == NULL) {
+		return -ENOMEM;
+	}
+	printk("len is %x and val is %u\n", len, (1<<8));
+	ret = usb_control_msg(	dev, ctrlpipe, USB_REQ_GET_DESCRIPTOR,
+				USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_INTERFACE,
+				0x200, 
+				//itf->altsetting[0].desc.bInterfaceNumber,
+				0,
+				buff,
+				len,
+				1000);
+	if(ret > 0) {
+		__le16 i;
+		for(i = 0; i < len; ++i) {
+			printk("%d ", buff[i]);
+		}
+		ret = 0;
+	} else {
+		printk("unable to get report (err=%d)\n", ret);
+	}
+	kfree(buff);
+	return ret;
+}
+
 static int __devinit usb_stress_probe(	struct usb_interface *itf,
 					const struct usb_device_id *id __unused)
 {
@@ -384,6 +462,14 @@ static int __devinit usb_stress_probe(	struct usb_interface *itf,
 	if(ret) {
 		goto probe_err;
 	}
+	ret = usb_stress_get_hid_report(itf);
+	if(ret) {
+		goto probe_err;
+	}
+	ret = usb_stress_set_hid_report(itf);
+	if(ret) {
+		goto probe_err;
+	}
 #ifdef DEBUG
 	dev_info(&device->dev,
 		"hid_desc[len=%u, dtype=%u, class[dtype=%x, dlen=%x(%x)]\n",
@@ -395,13 +481,14 @@ static int __devinit usb_stress_probe(	struct usb_interface *itf,
 #endif
 
 
+	/*
 	setup_timer(	&usbstress.us_timer,
 			usb_stress_poll,
 			(unsigned long)&usbstress);
 	mod_timer(&usbstress.us_timer, jiffies + 4 * HZ);
 
 	dev_info(&device->dev, "%s probe success\n", __func__);
-
+*/
 	return 0;
 probe_err:
 	usb_set_intfdata(itf, NULL);
