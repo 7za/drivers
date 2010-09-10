@@ -356,6 +356,42 @@ static int __devinit usb_stress_get_hid_desc(struct usb_host_interface *itf)
 	return ret;
 }
 
+static int __devinit usb_stress_parse_hid_desc(struct usb_host_interface *itf)
+{
+	int ret;
+	int retry = 5;
+	__le16 len = usbstress.us_hid->desc[0].wDescriptorLength;
+	char *report = kzalloc(len, GFP_KERNEL);
+	unsigned int ctrlpipe = usb_sndctrlpipe(usbstress.us_dev, 0);
+	report [0] = 0;
+	report [7] = 9;
+	
+	if(report == NULL) {
+		return -ENOMEM;
+	}
+
+	do {
+		ret = usb_control_msg(	usbstress.us_dev,
+					ctrlpipe,
+					USB_REQ_SET_CONFIGURATION,
+					USB_RECIP_INTERFACE |
+					USB_TYPE_CLASS |
+					USB_DIR_OUT,
+					0x200,
+					0x0,
+					report,
+					len,
+					5 * 1000);		
+		if(ret == 0) {
+			printk("success\n");
+		} else {
+			printk("error = %d\n", ret);
+		}
+	}while(retry-- && ret < 0);
+
+	return ret;
+}
+
 static int __devinit usb_stress_probe(	struct usb_interface *itf,
 					const struct usb_device_id *id __unused)
 {
@@ -384,6 +420,13 @@ static int __devinit usb_stress_probe(	struct usb_interface *itf,
 	if(ret) {
 		goto probe_err;
 	}
+	ret = usb_stress_parse_hid_desc(itf->cur_altsetting);
+
+	if(ret) {
+		goto probe_err;
+	}
+
+
 #ifdef DEBUG
 	dev_info(&device->dev,
 		"hid_desc[len=%u, dtype=%u, class[dtype=%x, dlen=%x(%x)]\n",
