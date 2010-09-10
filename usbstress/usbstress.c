@@ -104,11 +104,11 @@ static char* usb_completion_status_err(int err)
 static char* usb_submit_urb_err(int err)
 {
 	switch(err) {
-		case 0:		return "success";
-		case -EPIPE:	return "unknownn urb";
-		case -ENODEV:	return "no device";
-		case -EAGAIN:	return "too many packet";
-		default:	return "generic error";
+	case 0:		return "success";
+	case -EPIPE:	return "unknownn urb";
+	case -ENODEV:	return "no device";
+	case -EAGAIN:	return "too many packet";
+	default:	return "generic error";
 	}
 }
 
@@ -162,9 +162,15 @@ static int usb_stress_ask_stick_status(void)
 {
 	int ret;
 	char *msg_err;
-	
-	usbstress.us_buffctrl[0] = 0x0f; 
-	usbstress.us_buffctrl[7] = 0x08; 
+	static int cpt = 0;
+	if(cpt & 0x1) {
+		usbstress.us_buffctrl[0] = 0x0f; 
+		usbstress.us_buffctrl[7] = 0x08; 
+	} else {
+		usbstress.us_buffctrl[0] = 0x0;
+		usbstress.us_buffctrl[7] = 0x09;
+	}
+	cpt++;
 	
 	ret = usb_submit_urb(usbstress.us_urbint, GFP_ATOMIC);
 	msg_err = usb_submit_urb_err(ret);
@@ -181,7 +187,7 @@ static int usb_stress_ask_stick_status(void)
 static void usb_stress_poll(unsigned long data __unused)
 {
 	usb_stress_ask_stick_status();
-	mod_timer(&usbstress.us_timer, jiffies + 4 * HZ);
+	mod_timer(&usbstress.us_timer, jiffies + 2 * HZ);
 }
 
 static void __devexit usb_stress_free_urb(void)
@@ -307,7 +313,7 @@ static int __devinit usb_stress_init_ctrlurb(void)
 	usbstress.us_reqctrl->bRequest	    = USB_REQ_SET_CONFIGURATION;
 	usbstress.us_reqctrl->wValue  = cpu_to_le16(BM_VALUE);
 	usbstress.us_reqctrl->wIndex  = cpu_to_le16(BM_INDEX);
-	usbstress.us_reqctrl->wLength = cpu_to_le16(BM_LEN);
+	usbstress.us_reqctrl->wLength = cpu_to_le16(4*BM_LEN);
 
 	usb_fill_control_urb(	usbstress.us_urbctrl,
 				usbstress.us_dev,
@@ -432,7 +438,6 @@ static int __devinit usb_stress_probe(	struct usb_interface *itf,
 	}
 	usbstress.us_ep = endpoint;
 	usb_set_intfdata(itf, &usbstress);
-
 	ret = usb_stress_prepare_urb();
 
 	if(ret) {
@@ -440,6 +445,7 @@ static int __devinit usb_stress_probe(	struct usb_interface *itf,
 		goto probe_err;
 	}
 
+/*
 	ret = usb_stress_get_hid_desc(itf->cur_altsetting);
 
 	if(ret) {
@@ -452,11 +458,11 @@ static int __devinit usb_stress_probe(	struct usb_interface *itf,
 		goto probe_err;
 	}
 	
-
+*/
 	setup_timer(	&usbstress.us_timer,
 			usb_stress_poll,
 			(unsigned long)&usbstress);
-	mod_timer(&usbstress.us_timer, jiffies + 4 * HZ);
+	mod_timer(&usbstress.us_timer, jiffies + 2 * HZ);
 
 	dev_info(&device->dev, "%s probe success\n", __func__);
 
