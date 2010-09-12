@@ -12,7 +12,7 @@
 
 #include "missile_tenx_type.h"
 
-int  missile_tenx_netlink_init( struct cb_id * id);
-void missile_tenx_netlink_exit( struct cb_id * id);
+int missile_tenx_netlink_init(struct cb_id *id);
+void missile_tenx_netlink_exit(struct cb_id *id);
 
 #endif

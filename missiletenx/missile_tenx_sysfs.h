@@ -5,7 +5,6 @@
 #include <linux/usb.h>
 #include "missile_tenx_type.h"
 
-
 #define missile_tenx_sysfs_create_file(filename,actioname) \
 	static ssize_t missile_tenx_sysfs_set_##actioname (struct device *dev, \
 			                                   struct device_attribute *attr,\
@@ -27,8 +26,6 @@
 			   missile_tenx_sysfs_get_##filename,\
 			   missile_tenx_sysfs_set_##filename)
 
-
-
-int  missile_tenx_sysfs_init(struct device *);
+int missile_tenx_sysfs_init(struct device *);
 void missile_tenx_sysfs_exit(struct device *);
 #endif
