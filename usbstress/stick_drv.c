@@ -195,10 +195,7 @@ static void stick_stress_process_packet(int x, int y)
 	y = Y_AXIS_MAX - abs(y); 	
 	input_report_abs(stickdrv.us_input, REL_Y, y);
 
-	printk("x=%d, y=%d\n", x, y);
-
 	input_sync(stickdrv.us_input);
-
 }
 
 static void stick_stress_irq(struct urb *urb)
