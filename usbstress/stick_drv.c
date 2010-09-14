@@ -200,15 +200,16 @@ static void stick_stress_process_packet(int x, int y)
 
 static void stick_stress_irq(struct urb *urb)
 {
-	int x, y;
+	int x, y, flag;
 	int status = urb->status;
 	struct device *dev = &stickdrv.us_dev->dev;
 	if(status == 0) {
 		dev_dbg(dev, "urb transmited\n");
 		if(urb->actual_length == 8) {
-			x = stickdrv.us_buffint[1];
-			y = stickdrv.us_buffint[2];
-			if(x || y) {
+			flag = stickdrv.us_buffint[0]; 
+			if(flag) {
+				x = stickdrv.us_buffint[1];
+				y = stickdrv.us_buffint[2];
 				stick_stress_process_packet(x, y);
 			}
 		}
