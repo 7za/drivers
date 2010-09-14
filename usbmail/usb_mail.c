@@ -3,6 +3,7 @@
 #include <linux/init.h>
 #include <linux/usb.h>
 #include <linux/sysfs.h>
+#include <linux/mutex.h>
 
 #define UM_AUTHOR	"frederic ferrandis"
 #define UM_LICENSE	"GPL"
@@ -32,6 +33,7 @@ static DEVICE_ATTR(color,
 		color_show,
 		color_store);
 
+static DECLARE_WAIT_QUEUE_HEAD(urb_submit_headqueue);
 
 struct um_device_driver {
 	struct usb_host_endpoint	*um_inep;
@@ -49,6 +51,10 @@ struct um_device_driver {
 	dma_addr_t um_outdma;
 
 	char um_currcolor[12];
+
+	struct mutex um_mutex;
+
+	u8	um_ctx;
 };
 
 static struct um_device_driver um_desc;
@@ -57,11 +63,13 @@ static void um_intout_completion(struct urb *urb)
 {
 	struct device *dev = &um_desc.um_device->dev;
 	int status;
-
+	printk("count usage : %d\n", urb->use_count);
 	status = urb->status;
 	if(status) {
 		dev_err(dev, "can't complete out urb(%d)\n", status);
 	}
+	--(um_desc.um_ctx);
+	wake_up_interruptible(&urb_submit_headqueue);
 }
 
 static void um_intin_completion(struct urb *urb)
@@ -82,6 +90,7 @@ static void um_send_new_color(void)
 	if(strncmp("red", um_desc.um_currcolor, 3) == 0) {
 		memcpy(um_desc.um_outbuff, redbuff, sizeof(redbuff));	
 	}
+	printk("count usage : %d\n", um_desc.um_outurb->use_count);
 	status = usb_submit_urb(um_desc.um_outurb, GFP_ATOMIC);
 	if(status) {
 		dev_err(&um_desc.um_device->dev, "can't send out urb\n");
@@ -102,8 +111,13 @@ static ssize_t color_store(struct device *dev,
 				const char *buf,
 				size_t count)
 {
+	mutex_lock(&um_desc.um_mutex);
+	wait_event_interruptible(urb_submit_headqueue,
+				um_desc.um_ctx == 0);
+	++ (um_desc.um_ctx);
 	sscanf(buf, "%12s", um_desc.um_currcolor);
 	um_send_new_color();
+	mutex_unlock(&um_desc.um_mutex);
 	return strnlen(buf, PAGE_SIZE);
 }
 
@@ -271,6 +285,7 @@ static struct usb_driver um_driver = {
 
 static int __init um_init(void)
 {
+	mutex_init(&um_desc.um_mutex);
 	return usb_register(&um_driver);	
 }
 
