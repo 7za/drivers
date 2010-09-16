@@ -11,4 +11,4 @@ modules::
 	$(MAKE)  -C $(KDIR) M=$(PWD) modules
 
 clean::
-	rm -fr *.o *.ko modules.order  Module.symvers lktrace_fs.mod.c .lk* .tmp_versions
+	$(MAKE)  -C $(KDIR) M=$(PWD) clean

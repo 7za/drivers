@@ -1,15 +1,26 @@
 #!/bin/bash
 
+mount_debugfs()
+{
+	mount -t debugfs none /sys/kernel/debug
+}
+
+unmount_debugfs()
+{
+	umount debugfs
+}
 
 start()
 {
-    insmod ./lktrace_fs.ko
-    mount -t lktracefs none ./test
+	mount_debugfs
+	insmod ./lktrace_fs.ko
+	mount -t lktracefs none ./test
 }
 
 stop()
 {
-    umount ./test && rmmod lktrace_fs;
+	umount ./test && rmmod lktrace_fs;
+	unmount_debugfs
 }
 
 restart()
