@@ -63,7 +63,6 @@ static void um_intout_completion(struct urb *urb)
 {
 	struct device *dev = &um_desc.um_device->dev;
 	int status;
-	printk("count usage : %d\n", urb->use_count);
 	status = urb->status;
 	if(status) {
 		dev_err(dev, "can't complete out urb(%d)\n", status);
@@ -83,19 +82,26 @@ static void um_intin_completion(struct urb *urb)
 	}
 }
 
-static void um_send_new_color(void)
+static int um_send_new_color(void)
 {
-	static  char redbuff[] = { 0x2, 0x4, 0x4, 0x4, 0x4};
+	static  char redbuff[]   = { 0x2, 0x4, 0x4, 0x4, 0x4};
+	static  char greenbuff[] = { 0x1, 0x4, 0x4, 0x4, 0x4};
+	static  char nonebuff[] =  { 0x0, 0x4, 0x4, 0x4, 0x4}; 
+
 	int status;
-	if(strncmp("red", um_desc.um_currcolor, 3) == 0) {
+	if(strncmp("red", um_desc.um_currcolor, 3) == 0) { 
 		memcpy(um_desc.um_outbuff, redbuff, sizeof(redbuff));	
+	} else if(strncmp("green", um_desc.um_currcolor, 5) == 0) {
+		memcpy(um_desc.um_outbuff, greenbuff, sizeof(greenbuff));
+	} else {
+		memcpy(um_desc.um_outbuff, nonebuff, sizeof(nonebuff));	
 	}
-	printk("count usage : %d\n", um_desc.um_outurb->use_count);
 	status = usb_submit_urb(um_desc.um_outurb, GFP_ATOMIC);
 	if(status) {
 		dev_err(&um_desc.um_device->dev, "can't send out urb\n");
+		return -1;
 	}
-	return;
+	return 0;
 }
 
 static ssize_t color_show(struct device *dev,
@@ -111,12 +117,16 @@ static ssize_t color_store(struct device *dev,
 				const char *buf,
 				size_t count)
 {
+	int ret;
 	mutex_lock(&um_desc.um_mutex);
 	wait_event_interruptible(urb_submit_headqueue,
 				um_desc.um_ctx == 0);
 	++ (um_desc.um_ctx);
 	sscanf(buf, "%12s", um_desc.um_currcolor);
-	um_send_new_color();
+	ret = um_send_new_color();
+	if(ret < 0) {
+		-- (um_desc.um_ctx);
+	}
 	mutex_unlock(&um_desc.um_mutex);
 	return strnlen(buf, PAGE_SIZE);
 }
@@ -272,7 +282,7 @@ static int __devinit um_probe(	struct usb_interface *interface,
 
 	ret = device_create_file(&um_desc.um_device->dev, &dev_attr_color);
 
-	dev_info(&dev->dev, "probe finishe\n");
+	dev_info(&dev->dev, "probe finished\n");
 	return ret;
 }
 
