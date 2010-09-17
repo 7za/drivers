@@ -6,6 +6,11 @@
 #define LKTRACE_FSNAME "lktracefs"
 #define LKTRACE_FSMAGIC 0xef1244dd
 
+#ifndef CONFIG_KPROBES
+# error "your kernel doesn't support kprobes"
+#endif
+
+
 extern int lktracefile_create_enable_file(struct super_block *sb,
 			       struct dentry *root, int *associated_data);
 
@@ -101,9 +106,6 @@ static void lktracefs_create_files(struct super_block *sb, struct dentry *root)
 	if (lktracefile_create_enable_file(sb, root, &lktrace_state.lk_enabled)) {
 		printk(KERN_ERR "unable to create enable file\n");
 	}
-	if (lktrace_create_debugfs(NULL)) {
-		printk(KERN_ERR "unable to create debugfs files\n");
-	}
 }
 
 static int lktracefs_fill_super(struct super_block *sb, void *data, int silent)
@@ -157,6 +159,13 @@ static struct file_system_type lktracefs_type = {
 static int __init lktracefs_init(void)
 {
 	int ret = register_filesystem(&lktracefs_type);
+	if(ret) {
+		return ret;
+	}
+	ret = lktrace_create_debugfs(NULL);
+	if(ret) {
+		printk(KERN_ERR "unable to create debugfs files\n");
+	}
 	return ret;
 }
 

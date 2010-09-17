@@ -1,4 +1,5 @@
 #include <linux/fs.h>
+#include <linux/kallsyms.h>
 #include <linux/kprobes.h>
 #include <linux/slab.h>
 #include <linux/debugfs.h>
@@ -6,16 +7,17 @@
 #include <linux/rcupdate.h>
 #include <linux/gfp.h>
 #include <asm/uaccess.h>
+#include <linux/mutex.h>
 
 
 #define LKTRACE_FUNCNAME_MAXLEN (32) 
 #define LKTRACE_READBUFF_MAXLEN (512)
 
 static LIST_HEAD(lktrace_probelist_head);
+static DEFINE_MUTEX(lktrace_probelist_mutex);
 
 struct lktrace_probelist
 {
-	struct rcu_head		lkpl_rcu;
 	struct list_head	lkpl_list;
 	spinlock_t		lkpl_lock;
 
@@ -48,14 +50,45 @@ static struct file_operations lktrace_debugfs_fops = {
 	.release	=	lktrace_debugfs_fops_release,
 };
 
-static void lktrace_init_probelist_elem(struct lktrace_probelist *const ptr,
+static int lktrace_init_probelist_elem(struct lktrace_probelist *const ptr,
 					char  fname[],
 					off_t off,
 					char cbname[])
 {
+	int ret;
 	strlcpy(ptr->lkpl_fname,  fname, sizeof(ptr->lkpl_fname));
 	ptr->lkpl_offset = off;
 	strlcpy(ptr->lkpl_cbname, fname, sizeof(ptr->lkpl_cbname));
+
+	ptr->lkpl_probe.addr = (kprobe_opcode_t*)kallsyms_lookup_name(fname);
+	if(ptr->lkpl_probe.addr == NULL) {
+		printk("error, can't resolv %s func\n", fname);
+		return -EINVAL; 
+	} else {
+		printk("ok, we resolv %s func at %p addr\n", fname, 
+							ptr->lkpl_probe.addr);
+	}
+
+	ptr->lkpl_probe.addr += off;
+
+	ptr->lkpl_probe.pre_handler = (kprobe_pre_handler_t )
+						kallsyms_lookup_name(cbname);
+
+	if(ptr->lkpl_probe.pre_handler == NULL) {
+		printk("error, can't resolv %s handler\n", cbname);
+		return -EINVAL;
+	} else {
+		printk("ok we resolv %s func at %p addr\n", cbname,
+						ptr->lkpl_probe.pre_handler);
+	}
+
+	ret = register_kprobe(&ptr->lkpl_probe);
+
+	if(ret < 0) {
+		printk("can't register kprobe: cause = %d\n", ret);
+	}
+
+	return ret;
 }
 
 
@@ -63,7 +96,6 @@ static struct lktrace_probelist* lktrace_alloc_new_probelist_elem(void)
 {
 	struct lktrace_probelist *ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if(ret) {
-		INIT_RCU_HEAD(  &ret->lkpl_rcu  );
 		INIT_LIST_HEAD( &ret->lkpl_list );
 		spin_lock_init( &ret->lkpl_lock );
 	}
@@ -74,14 +106,13 @@ static int lktrace_debugfs_fops_open( struct inode *inode, struct file *f)
 {
 	/* open just get first link in list */
 	struct lktrace_probelist *ptr;
-	rcu_read_lock();
-	ptr = list_first_entry_rcu(&lktrace_probelist_head, 
+	mutex_lock(&lktrace_probelist_mutex);
+	ptr = list_first_entry(&lktrace_probelist_head, 
 				struct lktrace_probelist,
 				lkpl_list);
-	printk("first addr = %p\n", ptr);
+	mutex_unlock(&lktrace_probelist_mutex);
 	f->private_data = ptr;
 
-	rcu_read_unlock();
 	return 0;
 }
 
@@ -104,15 +135,14 @@ static ssize_t lktrace_debugfs_fops_read(struct file *file,
 	struct lktrace_probelist *walker =  file->private_data;
 	
 	/* return EOF */
-	if(walker == NULL) {
+	if(walker == NULL || &walker->lkpl_list == &lktrace_probelist_head) {
 		return count;
 	}
 
-	rcu_read_lock();
-	list_for_each_entry_continue_rcu(walker, 
-					&lktrace_probelist_head, 
-					lkpl_list) {
-		printk("loop\n");
+	mutex_lock(&lktrace_probelist_mutex);
+	list_for_each_entry(walker, 
+			&lktrace_probelist_head, 
+			lkpl_list) {
 		if(remaining <= 0) {
 			goto end_read;
 		}
@@ -126,7 +156,7 @@ static ssize_t lktrace_debugfs_fops_read(struct file *file,
 		// can we add ret bytes in buffer? 
 		if(ret < remaining) {
 			if(copy_to_user(ubuff + count, buff, ret)) {
-				count =  -ENOMEM;
+				count =  -EIO;
 				goto end_read;
 			}
 		} else {
@@ -138,8 +168,8 @@ static ssize_t lktrace_debugfs_fops_read(struct file *file,
 		count	  += ret;
 	}
 
-end_read:
-	rcu_read_unlock();
+end_read:	
+	mutex_unlock(&lktrace_probelist_mutex);
 	file->private_data = walker;
 	return count;
 }
@@ -176,15 +206,21 @@ static ssize_t lktrace_debugfs_fops_write(struct file *file,
 			&off,
 			cbname);
 	if(ret == 3) {
+		int hasprobe;
 		struct lktrace_probelist *elt = lktrace_alloc_new_probelist_elem();
 		if(elt == NULL) {
 			count = -ENOMEM;
 			goto end_write;
 		}
 
-		lktrace_init_probelist_elem(elt, fname, off, cbname);
-		printk("add elt addr=%p\n", elt);
-		list_add_rcu(&elt->lkpl_list, &lktrace_probelist_head);
+		hasprobe = lktrace_init_probelist_elem(elt, fname, off, cbname);
+		if(hasprobe < 0) {
+			count = hasprobe;
+			goto end_write;
+		}
+		mutex_lock(&lktrace_probelist_mutex);
+		list_add(&elt->lkpl_list, &lktrace_probelist_head);
+		mutex_unlock(&lktrace_probelist_mutex);
 		count = bufflen;
 	} else {
 		printk(KERN_ERR "I/O error, sscanf return %d \n", ret);
@@ -193,7 +229,7 @@ static ssize_t lktrace_debugfs_fops_write(struct file *file,
 
 end_write:
 	kfree(tmpbuff);
-	printk("%s : return %zd\n", __func__, count);
+	printk("%s : return %zd (expected=%zd)\n", __func__, count, bufflen);
 	return count;
 }
 
@@ -220,19 +256,9 @@ int lktrace_create_debugfs(void *data)
 	return ret;
 }
 
-void lktrace_free_elem_rcu (struct rcu_head *head)
-{
-	struct lktrace_probelist *walker = container_of(head,
-							struct lktrace_probelist,
-							lkpl_rcu);
-
-	kfree(walker);
-}
-
-
 void lktrace_destroy_debugfs(void)
 {
-	struct lktrace_probelist *walker;
+	struct lktrace_probelist *walker = NULL, *tmp = NULL;
 	if(entry) {
 		debugfs_remove(entry);
 		entry = NULL;
@@ -241,13 +267,14 @@ void lktrace_destroy_debugfs(void)
 		debugfs_remove(main);
 		main = NULL;
 	}
-	list_for_each_entry_rcu(walker, 
-			&lktrace_probelist_head,
-			lkpl_list) {
-
-		list_del_rcu( &walker->lkpl_list );
-		call_rcu(&walker->lkpl_rcu, lktrace_free_elem_rcu);
+	mutex_lock(&lktrace_probelist_mutex);
+	list_for_each_entry_safe(walker,
+				tmp,
+				&lktrace_probelist_head,
+				lkpl_list) {
+		kfree(walker);
 	}
+	mutex_unlock(&lktrace_probelist_mutex);
 }
 
 
