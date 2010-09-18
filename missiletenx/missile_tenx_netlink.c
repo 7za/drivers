@@ -8,16 +8,20 @@
 
 static struct cb_id *sg_cbid = NULL;
 
-static void missile_tenx_connector_on_receive(void *p)
+static void missile_tenx_connector_on_receive(struct cn_msg *msg,
+						struct netlink_skb_parms *v)		
 {
-	struct cn_msg *msg = (struct cn_msg *)p;
 	missile_tenx_driver_t *drv =
 	    container_of(sg_cbid, missile_tenx_driver_t, mtdrv_socket);
 
 	if (likely(drv)) {
 		missile_tenx_cmdlist(drv, msg->data, msg->len);
 	}
+
+	(void)v;
 }
+
+//‘void (*)(struct cn_msg *, struct netlink_skb_parms *)
 
 int missile_tenx_netlink_init(struct cb_id *id)
 {
