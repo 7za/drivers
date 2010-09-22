@@ -272,6 +272,8 @@ void lktrace_destroy_debugfs(void)
 				tmp,
 				&lktrace_probelist_head,
 				lkpl_list) {
+		if(walker->lkpl_probe.addr)
+			unregister_kprobe(&walker->lkpl_probe);
 		kfree(walker);
 	}
 	mutex_unlock(&lktrace_probelist_mutex);

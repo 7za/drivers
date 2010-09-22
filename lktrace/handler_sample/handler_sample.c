@@ -30,10 +30,17 @@ static __attribute__((used)) noinline  int color_handler (struct kprobe *probe, 
 {
 	struct um_device_driver *dd = kallsyms_lookup_name("um_desc");
 
-	dump_stack();
+	
+
 	if(dd) {
-		printk("current color = %s\n", dd->um_currcolor);
+		pr_info("current color = %s\n", dd->um_currcolor);
 	}
+
+	if(reg && reg->cx) {
+		char *new_color = (char*)reg->cx;
+		pr_info("try to set color with %s\n", new_color);
+	}
+
 	return 0;
 }
 
